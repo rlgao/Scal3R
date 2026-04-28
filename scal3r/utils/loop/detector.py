@@ -110,7 +110,12 @@ class LoopDetector:
 
         transform = self._input_transform(self.image_size)
         descriptors = []
-        pbar = tqdm(range(0, len(self.image_list), self.batch_size), desc="Extracting loop features")
+
+        pbar = tqdm(
+            range(0, len(self.image_list), self.batch_size), 
+            desc="Extracting loop features"
+        )
+        
         for start in pbar:
             batch_paths = self.image_list[start:start + self.batch_size]
             batch_imgs = []

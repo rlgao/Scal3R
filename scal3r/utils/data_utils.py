@@ -11,6 +11,21 @@ from os.path import dirname, expanduser, splitext
 from scal3r.utils.base_utils import DotDict
 
 
+def _cv2_imwrite_params(suffix: str, jpeg_quality: int, png_compression: int) -> list[int]:
+    """Return only flags valid for the image suffix so OpenCV does not warn about ignored keys."""
+    if suffix in {".jpg", ".jpeg"}:
+        return [int(cv2.IMWRITE_JPEG_QUALITY), int(jpeg_quality)]
+    if suffix == ".png":
+        return [int(cv2.IMWRITE_PNG_COMPRESSION), int(png_compression)]
+    if suffix == ".exr":
+        piz = int(getattr(cv2, "IMWRITE_EXR_COMPRESSION_PIZ", 5))
+        return [int(cv2.IMWRITE_EXR_COMPRESSION), piz]
+    webp_flag = getattr(cv2, "IMWRITE_WEBP_QUALITY", None)
+    if suffix == ".webp" and webp_flag is not None:
+        return [int(webp_flag), int(jpeg_quality)]
+    return []
+
+
 def ensure_dir(path: str) -> str:
     path = expanduser(path)
     if path:
@@ -183,19 +198,13 @@ def save_image(
         img = img[..., :3]
     elif suffix == ".exr":
         os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
+        if img.dtype != np.float32:
+            img = img.astype(np.float32, copy=False)
 
-    return cv2.imwrite(
-        img_path,
-        img,
-        [
-            cv2.IMWRITE_JPEG_QUALITY,
-            jpeg_quality,
-            cv2.IMWRITE_PNG_COMPRESSION,
-            png_compression,
-            cv2.IMWRITE_EXR_COMPRESSION,
-            cv2.IMWRITE_EXR_COMPRESSION_PIZ,
-        ],
-    )
+    params = _cv2_imwrite_params(suffix, jpeg_quality, png_compression)
+    if params:
+        return bool(cv2.imwrite(img_path, img, params))
+    return bool(cv2.imwrite(img_path, img))
 
 
 def export_pts(

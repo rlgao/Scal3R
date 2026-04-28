@@ -18,7 +18,12 @@ from scal3r.utils.math_utils import affine_inverse, affine_padding
 from scal3r.engine.path import get_default_output_dir, resolve_release_path
 from scal3r.utils.console_utils import get_logger, log_block, log_exceptions, tqdm
 from scal3r.utils.runtime_utils import StageRecorder, StopAfterStage, maybe_stop_after, release_memory
-from scal3r.utils.image_utils import build_image_only_block, collect_image_paths, load_and_preprocess_images
+from scal3r.utils.image_utils import (
+    apply_frame_range_to_sorted_paths,
+    build_image_only_block,
+    collect_image_paths,
+    load_and_preprocess_images,
+)
 from scal3r.utils.loop import accumulate_transform, build_loop_batches, build_map_processor, build_sim3_loop_optimizer, combine_transform, detect_loops, visualize_loop
 from scal3r.utils.offload_utils import cleanup_offload_root, clear_dpt_state, get_offload_root, get_runtime_root, materialize_payload, materialize_tensor_dict, offload_batch_block, offload_output_block, persist_dpt_state, remove_payload, should_release_runtime_state, store_agg_state
 
@@ -57,6 +62,16 @@ def load_data(dataset_cfg: dotdict, args, recorder: StageRecorder | None = None)
     if recorder is not None:
         recorder.record('collect_images.begin', input_dir=args.input_dir, image_patterns=args.image_patterns)
     image_paths = collect_image_paths(args.input_dir, args.image_patterns)
+    image_paths = apply_frame_range_to_sorted_paths(
+        image_paths,
+        start_frame=int(args.start_frame),
+        end_frame=int(args.end_frame),
+        interval=int(args.interval),
+    )
+    if not image_paths:
+        raise FileNotFoundError(
+            "No images remain after start_frame/end_frame/interval; widen the range or check input_dir/patterns."
+        )
     if args.max_images > 0:
         image_paths = image_paths[:args.max_images]
     if recorder is not None:
@@ -177,7 +192,14 @@ def load_data(dataset_cfg: dotdict, args, recorder: StageRecorder | None = None)
     return batches, indices
 
 
-def apply_ttt(model, agg_state_refs, dpt_state_refs, args, layer_index: int, dpt_layer_set: set[int]):
+def apply_ttt(
+    model, 
+    agg_state_refs, 
+    dpt_state_refs,
+    args, 
+    layer_index: int, 
+    dpt_layer_set: set[int]
+):
     ttt_order_grad = deepcopy(model.ttt_order[0:1])
     ttt_order_grad = [order._replace(use_cached=False)._replace(cache_last=False) for order in ttt_order_grad]
 
@@ -244,7 +266,12 @@ def apply_ttt(model, agg_state_refs, dpt_state_refs, args, layer_index: int, dpt
         torch.cuda.empty_cache()
 
 
-def forward(model, batches, args, recorder: StageRecorder | None = None):
+def forward(
+    model, 
+    batches, 
+    args, 
+    recorder: StageRecorder | None = None
+):
     output = [None for _ in range(len(batches))]
 
     batch0 = materialize_payload(batches[0])
@@ -260,7 +287,16 @@ def forward(model, batches, args, recorder: StageRecorder | None = None):
 
     if recorder is not None:
         recorder.record('embedder.begin', n_blocks=int(N), frames_per_block=int(S), height=int(H), width=int(W))
+    
+    '''
+    1. Image tokenization (patch embedding + special tokens)
+    Implementation: Aggregator.prepare → _prepare_tokens in scal3r/utils/vggt/models/aggregator.py:
+    - Normalizes images, reshapes to (B*S, 3, H, W).
+    - Runs self.patch_embed(images) — this is the DINOv2 ViT (or PatchEmbed) path that turns images into patch tokens.
+    - Concatenates camera / register / (optional) global tokens with patch tokens, builds 2D RoPE positions when enabled.
+    '''
     pbar = tqdm(total=N, desc='Forward DINOv2 embedder')
+
     for b, batch_ref in enumerate(batches):
         batch = materialize_payload(batch_ref)
         rgb = rearrange(to_cuda(batch.meta.rgb, args.device), 'b n (h w) c -> b n c h w', h=H, w=W)
@@ -281,14 +317,20 @@ def forward(model, batches, args, recorder: StageRecorder | None = None):
     if recorder is not None:
         recorder.record('embedder.done', n_blocks=int(N))
         maybe_stop_after('embedder.done', args, recorder)
-
     if recorder is not None:
         recorder.record(
             'aggregator.begin',
             n_layers=int(model.agg_regator.aa_block_num),
             ttt_layers=[int(i) for i in model.agg_regator.ttt_layer_idx],
         )
+        
+    '''
+    2. Alternating attention (frame vs global)
+    Implementation: Aggregator.forward_layer walks self.aa_order 
+    (typically alternating "frame" and "global")
+    '''
     pbar = tqdm(total=model.agg_regator.aa_block_num, desc='Forward aggregator')
+
     for j in range(model.agg_regator.aa_block_num):
         forward_intermediate_layers = collect_intermediate_layers(model, j)
         need_forward_outputs = len(forward_intermediate_layers) > 0
@@ -298,7 +340,9 @@ def forward(model, batches, args, recorder: StageRecorder | None = None):
             agg_state = materialize_payload(agg_state_refs[b])
             temp_output = {} if need_forward_outputs else None
             updated_state = model.agg_regator.forward_layer(
-                index=j, output=temp_output, **to_cuda(agg_state, args.device),
+                index=j, 
+                output=temp_output, 
+                **to_cuda(agg_state, args.device),
             )
             agg_state_refs[b] = store_agg_state(updated_state, args, b)
             if temp_output is not None:
@@ -307,18 +351,39 @@ def forward(model, batches, args, recorder: StageRecorder | None = None):
             if should_release_runtime_state(args):
                 release_memory(args.device)
 
+        '''
+        3. GCM / TTT (test-time adaptation on global blocks)
+        Orchestration (after each aggregator index j, across all chunks): 
+        backend.apply_ttt + call site
+        '''
         with torch.amp.autocast('cuda', enabled=False):
-            if (model.agg_regator.frame_use_ttt or model.agg_regator.global_use_ttt) and j in model.agg_regator.ttt_layer_idx:
-                apply_ttt(model, agg_state_refs, dpt_state_refs, args, j, dpt_layer_set)
+            if (
+                (model.agg_regator.frame_use_ttt or model.agg_regator.global_use_ttt) 
+                and 
+                j in model.agg_regator.ttt_layer_idx
+            ):
+                apply_ttt(
+                    model, 
+                    agg_state_refs, 
+                    dpt_state_refs, 
+                    args, 
+                    j, 
+                    dpt_layer_set
+                )
 
         pbar.update()
         if recorder is not None:
             recorder.record(
                 f'aggregator_layer_{j:02d}.done',
                 layer_index=int(j),
-                uses_ttt=bool((model.agg_regator.frame_use_ttt or model.agg_regator.global_use_ttt) and j in model.agg_regator.ttt_layer_idx),
+                uses_ttt=bool(
+                    (model.agg_regator.frame_use_ttt or model.agg_regator.global_use_ttt) 
+                    and 
+                    j in model.agg_regator.ttt_layer_idx
+                ),
             )
             maybe_stop_after(f'aggregator_layer_{j:02d}.done', args, recorder)
+
     pbar.close()
     if recorder is not None:
         recorder.record('aggregator.done', n_layers=int(model.agg_regator.aa_block_num))
@@ -331,8 +396,14 @@ def forward(model, batches, args, recorder: StageRecorder | None = None):
 
     if recorder is not None:
         recorder.record('decoder.begin', n_blocks=int(N))
+
+    '''
+    4. After the aggregator (still per chunk)
+    Decoder (per b): same forward — camera + DPT heads over dpt_state_refs[b] and RGB
+    '''
     with torch.amp.autocast('cuda', enabled=False):
         pbar = tqdm(total=N, desc='Forward decoder')
+        
         for b, batch_ref in enumerate(batches):
             if recorder is not None:
                 recorder.record(f'decoder_block_{b:02d}.begin', block_index=int(b))
@@ -661,6 +732,9 @@ def parse_args():
     parser.add_argument('--runtime_dir', type=str, default='', help='Directory to save runtime metadata and temporary artifacts. Defaults to <result_dir>/runtime.')
     parser.add_argument('--image_patterns', type=str, default='*.png,*.jpg,*.jpeg,*.bmp', help='Comma-separated glob patterns for input images')
     parser.add_argument('--max_images', type=int, default=-1, help='If positive, only use the first N sorted images from input_dir')
+    parser.add_argument('--start_frame', type=int, default=0, help='Slice start index into sorted images (inclusive)')
+    parser.add_argument('--end_frame', type=int, default=-1, help='Slice stop index (exclusive); -1 means through end')
+    parser.add_argument('--interval', type=int, default=1, help='Slice step / stride (>=1)')
     parser.add_argument('--preprocess_workers', type=int, default=32, help='Number of worker threads used for image loading and preprocessing')
     parser.add_argument('--block_size', type=int, default=60, help='Number of frames in a block')
     parser.add_argument('--overlap_size', type=int, default=30, help='Number of overlapping frames between adjacent blocks')
@@ -725,6 +799,9 @@ def main():
             maybe_stop_after('load_model.done', args, recorder)
 
         batches, indices = load_data(dataset_cfg, args, recorder=recorder)
+        print(f'len(batches): {len(batches)}')
+        print(f'len(indices): {len(indices)}')
+
         if recorder is not None:
             recorder.record(
                 'load_data.done',
@@ -741,7 +818,12 @@ def main():
         amp_dtype = torch.bfloat16 if device.type == 'cuda' and torch.cuda.get_device_capability(device)[0] >= 8 else torch.float16
         with torch.no_grad():
             with torch.amp.autocast('cuda', enabled=amp_enabled, dtype=amp_dtype):
-                output = forward(sampler, batches, args, recorder=recorder)
+                output = forward(
+                    sampler, 
+                    batches, 
+                    args, 
+                    recorder=recorder
+                )
 
         processed, output, batches, indices, visualize = post_process(
             output,

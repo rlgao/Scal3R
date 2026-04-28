@@ -34,10 +34,14 @@ def _collect_camera_results(processed, image_height: int, image_width: int, save
 
 
 def _save_depth_results(result_dir: str, scaled_dpt_map, render_height: int, render_width: int):
+    """Write metric depth as float32 single-channel EXR (OpenCV + OPENCV_IO_ENABLE_OPENEXR)."""
     dpt_paths = [
         join(result_dir, f"depths/{index:06d}.exr") for index in range(len(scaled_dpt_map))
     ]
-    dpts = [dpt.reshape(render_height, render_width, 1) for dpt in scaled_dpt_map]
+    dpts = [
+        np.asarray(dpt.reshape(render_height, render_width, 1), dtype=np.float32) for dpt in scaled_dpt_map
+    ]
+
     parallel_execution(
         dpt_paths,
         dpts,
@@ -64,7 +68,10 @@ def _save_block_points(result_dir: str, visualize, downsample_xyz_ratio: float):
 
 
 def _save_world_masks(result_dir: str, visualize, n_frames: int):
-    msk_paths = [join(result_dir, f"masks/{index:06d}.png") for index in range(n_frames)]
+    msk_paths = [
+        join(result_dir, f"masks/{index:06d}.png") for index in range(n_frames)
+    ]
+    
     parallel_execution(
         msk_paths,
         visualize.world_msk,

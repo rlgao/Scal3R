@@ -10,7 +10,7 @@ __pycache__/
 *.pth
 *.pt
 *.npy
-*.ipynb
+# *.ipynb
 
 # graphviz
 *.dot
@@ -45,7 +45,7 @@ __pycache__/
 condaenv*
 *.hdr
 
-data
+data/
 *.egg-info
 
 imgui.ini
@@ -89,3 +89,4 @@ diff*.html
 .ruff_cache
 CLAUDE.md
 scripts/test
+.codex

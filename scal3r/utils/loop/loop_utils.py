@@ -77,7 +77,9 @@ def build_loop_batches(
             batches_loop.append(
                 build_block_fn(sequence, sampler_indices, height, width, loop_size, dataset_cfg)
             )
-            indices_loop.append((block0, (start0, end0), block1, (start1, end1)))
+            indices_loop.append(
+                (block0, (start0, end0), block1, (start1, end1))
+            )
         except ValueError as exc:
             log_fn(f"[WARNING] cannot find loop between frame {i} and {j}: {exc}, skipping.")
 

@@ -129,6 +129,35 @@ def listify_patterns(patterns: str) -> List[str]:
     return [pattern.strip() for pattern in patterns.split(",") if pattern.strip()]
 
 
+def apply_frame_range_to_sorted_paths(
+    sorted_paths: List[str],
+    *,
+    start_frame: int = 0,
+    end_frame: int = -1,
+    interval: int = 1,
+) -> List[str]:
+    """Select images as ``sorted_paths[start_frame:end_frame:interval]`` (Python slice).
+
+    ``end_frame`` is an **exclusive** stop index (it is not included). ``end_frame < 0`` means
+    ``len(sorted_paths)`` (use all frames from ``start_frame`` to the end). ``interval`` is the
+    stride; values ``<= 0`` are treated as ``1``.
+    """
+    if not sorted_paths:
+        return []
+    n = len(sorted_paths)
+    start = max(0, int(start_frame))
+    if start >= n:
+        return []
+    step = int(interval) if int(interval) > 0 else 1
+    if int(end_frame) < 0:
+        stop = n
+    else:
+        stop = min(int(end_frame), n)
+    if stop <= start:
+        return []
+    return sorted_paths[start:stop:step]
+
+
 def collect_image_paths(input_dir: str, image_patterns: str) -> List[str]:
     image_paths = []
     for pattern in listify_patterns(image_patterns):

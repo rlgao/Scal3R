@@ -8,7 +8,9 @@ from scal3r.engine.path import get_release_root, resolve_release_path
 from scal3r.utils.data_utils import ensure_dir, write_json, write_lines
 from scal3r.dataloaders.datasets.image_folder_dataset import ImageFolderDataset
 
+# ----------------------------
 backend_module = "scal3r.pipelines.backend"
+# ----------------------------
 
 
 @dataclass
@@ -37,6 +39,9 @@ class InferenceRequest:
     probe_dir: str | None = None
     stop_after_stage: str | None = None
     dry_run: bool = False
+    start_frame: int = 0
+    end_frame: int = -1
+    interval: int = 1
 
 
 def _get_nested(config: dict[str, Any], *keys: str, default: Any = None) -> Any:
@@ -61,6 +66,9 @@ def run_inference(config: dict[str, Any], request: InferenceRequest) -> dict[str
             if pattern.strip()
         ),
         max_images=request.max_images,
+        start_frame=request.start_frame,
+        end_frame=request.end_frame,
+        interval=request.interval,
     )
     image_paths = dataset.list_images()
 
@@ -108,6 +116,12 @@ def run_inference(config: dict[str, Any], request: InferenceRequest) -> dict[str
         str(request.offload_outputs if request.offload_outputs is not None else data_cfg.get("offload_outputs", 0)),
         "--cleanup_offload",
         str(request.cleanup_offload if request.cleanup_offload is not None else data_cfg.get("cleanup_offload", 1)),
+        "--start_frame",
+        str(request.start_frame),
+        "--end_frame",
+        str(request.end_frame),
+        "--interval",
+        str(request.interval),
     ]
     max_align_points_per_frame = (
         request.max_align_points_per_frame
@@ -145,6 +159,9 @@ def run_inference(config: dict[str, Any], request: InferenceRequest) -> dict[str
         "image_count": len(image_paths),
         "first_image": str(image_paths[0]) if image_paths else "",
         "last_image": str(image_paths[-1]) if image_paths else "",
+        "start_frame": request.start_frame,
+        "end_frame": request.end_frame,
+        "interval": request.interval,
         "block_size": request.block_size or data_cfg.get("block_size", 60),
         "overlap_size": request.overlap_size or data_cfg.get("overlap_size", 30),
         "preprocess_workers": request.preprocess_workers or data_cfg.get("preprocess_workers", 32),

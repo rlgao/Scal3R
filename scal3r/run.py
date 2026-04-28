@@ -8,6 +8,72 @@ from scal3r.utils.console_utils import get_logger
 from scal3r.pipelines.inference import InferenceRequest, run_inference
 
 
+'''
+python -m scal3r.run \
+  --input_dir data/examples/office \
+  --output_dir data/results/examples_office
+
+
+############ REPLICA ############
+python -m scal3r.run \
+  --input_dir /home/grl/datasets/replica/room2/colors \
+  --output_dir data/results/replica_room2 \
+  --start_frame 0 \
+  --end_frame 500 \
+  --interval 10
+
+
+############ WAYMO ############
+python -m scal3r.run \
+    --input_dir /home/grl/datasets/waymo/152706/FRONT/rgb \
+    --output_dir data/results/waymo_152706 \
+    --start_frame 0 \
+    --end_frame 190 \
+    --interval 4
+
+
+############ KITTI-360 ############
+python -m scal3r.run \
+    --input_dir /home/grl/datasets/KITTI-360/data_2d_raw/2013_05_28_drive_0000_sync/image_00/data_rect \
+    --output_dir data/results/kitti360_0000 \
+    --start_frame 0 \
+    --end_frame 1000 \
+    --interval 2 \
+    --block_size 64 \
+    --overlap_size 16
+
+
+############ TUM ############
+python -m scal3r.run \
+    --input_dir /home/grl/datasets/tum/rgbd_dataset_freiburg1_room/rgb \
+    --output_dir data/results/tum_fr1_room \
+    --start_frame 0 \
+    --end_frame -1 \
+    --interval 5 \
+    --block_size 20 \
+    --overlap_size 5
+
+python -m scal3r.run \
+    --input_dir /home/grl/datasets/tum/rgbd_dataset_freiburg1_xyz/rgb \
+    --output_dir data/results/tum_fr1_xyz \
+    --start_frame 0 \
+    --end_frame -1 \
+    --interval 10 \
+    --block_size 20 \
+    --overlap_size 5
+
+python -m scal3r.run \
+    --input_dir /home/grl/datasets/tum/rgbd_dataset_freiburg1_desk/rgb \
+    --output_dir data/results/tum_fr1_desk \
+    --start_frame 0 \
+    --end_frame -1 \
+    --interval 2 \
+    --block_size 20 \
+    --overlap_size 5
+    
+'''
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="SCAL3R release inference entrypoint")
     parser.add_argument(
@@ -16,7 +82,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="configs/models/scal3r.yaml",
         help="Release config path relative to the release root.",
     )
-    parser.add_argument("--input_dir", type=str, required=True, help="Input image directory.")
+    parser.add_argument(
+        "--input_dir", 
+        type=str, 
+        required=True, 
+        help="Input image directory."
+    )
     parser.add_argument(
         "--output_dir",
         type=str,
@@ -34,18 +105,44 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", type=str, default="", help="Optional device override.")
     parser.add_argument("--max_images", type=int, default=-1, help="Optional image-count cap.")
     parser.add_argument(
+        "--start_frame",
+        type=int,
+        default=0,
+        help="0-based start index into the sorted image list (inclusive; same as Python slice start).",
+    )
+    parser.add_argument(
+        "--end_frame",
+        type=int,
+        default=-1,
+        help="0-based exclusive stop index (not included), i.e. subset is [start_frame:end_frame:interval]. "
+        "-1 means use len(images) as the stop (through the last image).",
+    )
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=1,
+        help="Stride in the slice (same as Python slice step; 1 = consecutive, 2 = every other).",
+    )
+    parser.add_argument(
         "--preprocess_workers",
         type=int,
         default=-1,
         help="Optional image-preprocess worker override.",
     )
-    parser.add_argument("--block_size", type=int, default=-1, help="Optional block-size override.")
+
+    parser.add_argument(
+        "--block_size", 
+        type=int, 
+        default=-1,  # default in inference.py: 60
+        help="Optional block-size override."
+    )
     parser.add_argument(
         "--overlap_size",
         type=int,
-        default=-1,
+        default=-1,  # default in inference.py: 30
         help="Optional overlap-size override.",
     )
+
     parser.add_argument("--use_loop", type=int, default=-1, help="Optional loop toggle override.")
     parser.add_argument(
         "--use_xyz_align",
@@ -95,6 +192,7 @@ def main() -> int:
     config = load_config(args.config)
     output_dir = resolve_release_path(args.output_dir) if args.output_dir else get_default_output_dir(args.tag)
     runtime_dir = resolve_release_path(args.runtime_dir) if args.runtime_dir else join(output_dir, "runtime")
+
     request = InferenceRequest(
         config_path=resolve_release_path(args.config),
         input_dir=abspath(expanduser(args.input_dir)),
@@ -120,8 +218,12 @@ def main() -> int:
         probe_dir=resolve_release_path(args.probe_dir) if args.probe_dir else None,
         stop_after_stage=args.stop_after_stage or None,
         dry_run=args.dry_run,
+        start_frame=args.start_frame,
+        end_frame=args.end_frame,
+        interval=args.interval if args.interval > 0 else 1,
     )
     result = run_inference(config, request)
+    
     logger.info("Backend command plan: %s", result["plan_path"])
     logger.info("Image count: %s", result["image_count"])
     logger.info("Executed: %s", result["executed"])
