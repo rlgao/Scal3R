@@ -82,7 +82,7 @@ def run_inference(config: dict[str, Any], request: InferenceRequest) -> dict[str
     command = [
         sys.executable,
         "-m",
-        backend_module,
+        backend_module,  # "scal3r.pipelines.backend"
         "--config",
         str(resolve_release_path(request.config_path)),
         "--input_dir",

@@ -212,12 +212,16 @@ def apply_ttt(
     shared_tokens = None
 
     for block_index in range(len(agg_state_refs)):
+        # 1. For each block, materialize aggregator state and compute TTT gradients.
         agg_state = materialize_payload(agg_state_refs[block_index])
         if shared_tokens is None:
             shared_tokens = agg_state['tokens']
         g0, g1, g2 = model.agg_regator.ttt_gradient(
-            index=layer_index, ttt_order=ttt_order_grad, **to_cuda(agg_state, args.device),
+            index=layer_index, 
+            ttt_order=ttt_order_grad, 
+            **to_cuda(agg_state, args.device),
         )
+        # 2. Sum gradients across blocks.
         if w0_grad_sum is None:
             w0_grad_sum, w1_grad_sum, w2_grad_sum = g0, g1, g2
         else:
@@ -229,6 +233,7 @@ def apply_ttt(
         if should_release_runtime_state(args):
             release_memory(args.device)
 
+    # 3. Compute shared updated weights
     shared_w0, shared_w1, shared_w2 = model.agg_regator.ttt_update(
         index=layer_index,
         tokens=shared_tokens,
@@ -246,6 +251,7 @@ def apply_ttt(
             if layer_index in dpt_layer_set
             else None
         )
+        # 4. For each block, apply the shared update
         updated_state = model.agg_regator.ttt_apply(
             index=layer_index,
             ttt_order=ttt_order_apply,
@@ -255,7 +261,12 @@ def apply_ttt(
             w2=shared_w2,
             **to_cuda(agg_state, args.device),
         )
-        agg_state_refs[block_index] = store_agg_state(updated_state, args, block_index)
+        # 5. Persist updated aggregator state and decoder intermediate state.
+        agg_state_refs[block_index] = store_agg_state(
+            updated_state, 
+            args, 
+            block_index
+        )
         if temp_output is not None:
             persist_dpt_state(temp_output, dpt_state_refs[block_index], args, block_index)
         del agg_state, updated_state, temp_output
@@ -268,6 +279,7 @@ def apply_ttt(
         torch.cuda.empty_cache()
 
 
+# embedder -> aggregator & TTT -> decoders
 def forward(
     model, 
     batches, 
@@ -413,7 +425,9 @@ def forward(
             rgb_feats = to_cuda(materialize_tensor_dict(dpt_state_refs[b]), args.device)
             rgb = rearrange(batch.meta.rgb, 'b n (h w) c -> b n c h w', h=H, w=W).to(args.device)
 
-            cam_maps = model.cam_decoder(rgb_feats)
+            cam_maps = model.cam_decoder(
+                rgb_feats
+            )
             xyz_map, xyz_cnf = model.xyz_decoder(
                 rgb_feats,
                 images=rgb,
@@ -467,6 +481,10 @@ def forward(
     return output
 
 
+'''
+post_process(...) converts raw per-block predictions into 
+globally aligned camera poses, depth maps, and optional point-cloud data.
+'''
 def post_process(
     raw: dotdict,
     batches: list,
@@ -533,9 +551,12 @@ def post_process(
     # Phase 1: Create all submaps (mask computation + point filtering)
     pbar = tqdm(total=n_blocks, desc='Preparing submaps')
     for b in range(n_blocks):
+        # 1 Per-Block Prediction Preparation
         batch = materialize_payload(batches[b])
         raw_block = materialize_payload(raw[b])
         xyz, dpt, cnf = prepare(batch, raw_block)
+
+        # 2 Submap Construction
         map_processor.add_submap(
             xyz=xyz,
             dpt=dpt,
@@ -557,8 +578,10 @@ def post_process(
     else:
         n_workers = min(n_pairs, os.cpu_count() or 4)
     logger.info('Aligning %d adjacent block pairs in parallel (%d workers)', n_pairs, n_workers)
+    # 3 Adjacent Block Alignment
     norm_track = map_processor.align_submaps_parallel(max_workers=n_workers)
 
+    # 4 Optional Loop Closure Optimization
     if n_blocks_loop > 0:
         pbar = tqdm(total=n_blocks_loop, desc='Processing loop closure blocks')
         for k in range(n_blocks_loop):
@@ -626,11 +649,15 @@ def post_process(
         batches = batches[:n_blocks]
         indices = indices[:n_blocks]
     else:
-        res_track = [map_processor.optimizer.get_submap(i).global_pose for i in range(len(batches))]
+        res_track = [
+            map_processor.optimizer.get_submap(i).global_pose 
+            for i in range(len(batches))
+        ]
 
     del map_processor
     gc.collect()
 
+    # 5 Final Frame Assembly
     overlap_prev_inds, overlap_curr_inds = [], []
     for b, batch_ref in enumerate(batches):
         if b == len(batches) - 1:
@@ -800,7 +827,11 @@ def main():
             )
         if recorder is not None:
             recorder.record('load_model.begin', config=args.config, checkpoint=args.checkpoint or '')
-        sampler, dataset_cfg = build_sampler_from_config(args.config, device, args.checkpoint)
+        sampler, dataset_cfg = build_sampler_from_config(
+            args.config, 
+            device, 
+            args.checkpoint
+        )
         if recorder is not None:
             recorder.record(
                 'load_model.done',
@@ -809,7 +840,11 @@ def main():
             )
             maybe_stop_after('load_model.done', args, recorder)
 
-        batches, indices = load_data(dataset_cfg, args, recorder=recorder)
+        batches, indices = load_data(
+            dataset_cfg, 
+            args, 
+            recorder=recorder
+        )
         print(f'len(batches): {len(batches)}')
         print(f'len(indices): {len(indices)}')
 
@@ -870,8 +905,16 @@ def main():
             runtime["n_frames"],
         )
 
-        save_results(processed, batches, visualize, runtime, args, recorder=recorder)
+        save_results(
+            processed, 
+            batches, 
+            visualize, 
+            runtime, 
+            args, 
+            recorder=recorder
+        )
         logger.info('Results saved to %s', args.result_dir)
+
     except StopAfterStage as exc:
         logger.info('Stopped after requested stage: %s', exc)
     finally:

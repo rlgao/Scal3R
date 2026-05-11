@@ -521,7 +521,9 @@ class FastWeightGluMLPMultihead(nn.Module):
             w2 = self.w2.repeat(B, 1, 1)
 
         x, w0_, w1_, w2_ = fast_weight_swish_glu_weight_norm_mini_batch_apply(
-            q, k, v, w0, w1, w2, lr0, lr1, lr2,
+            q, k, v, 
+            w0, w1, w2, 
+            lr0, lr1, lr2,
             ttt_ua_order=ttt_order,
             muon_update_steps=self.muon_update_steps,
             use_ddp_allreduce=self.use_ddp_allreduce,

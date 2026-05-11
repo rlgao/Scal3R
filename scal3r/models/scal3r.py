@@ -163,9 +163,17 @@ class Scal3R(nn.Module):
             use_reentrant=use_reentrant,
             use_chunkwise_checkpoint=use_chunkwise_checkpoint,
         )
-        self.cam_decoder = CameraHead(**self.cam_decoder_cfg)
-        self.xyz_decoder = DPTHead(**self.xyz_decoder_cfg, use_checkpoint=dpt_head_use_checkpoint)
-        self.dpt_decoder = DPTHead(**self.dpt_decoder_cfg, use_checkpoint=dpt_head_use_checkpoint)
+        self.cam_decoder = CameraHead(
+            **self.cam_decoder_cfg
+        )
+        self.xyz_decoder = DPTHead(
+            **self.xyz_decoder_cfg, 
+            use_checkpoint=dpt_head_use_checkpoint
+        )
+        self.dpt_decoder = DPTHead(
+            **self.dpt_decoder_cfg, 
+            use_checkpoint=dpt_head_use_checkpoint
+        )
         self.ttt_order = default_ttt_order()
 
 

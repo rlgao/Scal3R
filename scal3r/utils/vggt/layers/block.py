@@ -117,6 +117,7 @@ class Block(nn.Module):
 
         # Maybe use TTT
         if use_ttt:
+            # LaCT fast-weight MLP
             self.ttt = FastWeightGluMLPMultihead(
                 dim=dim,
                 qkv_bias=qkv_bias,
@@ -131,12 +132,12 @@ class Block(nn.Module):
         self.use_ttt = use_ttt
 
     def forward(
-            self,
-            x: Tensor, pos=None, cams=None, cam_drop=False,
-            ttt_order=None, ttt_cache=None, ttt_fastw=None, ttt_steps=None, ttt_token=None, enable_ttt=True,
-            B=None, S=None, P=None, C=None, patch_start_idx=None,
-            output=None,
-        ) -> Tensor:
+        self,
+        x: Tensor, pos=None, cams=None, cam_drop=False,
+        ttt_order=None, ttt_cache=None, ttt_fastw=None, ttt_steps=None, ttt_token=None, enable_ttt=True,
+        B=None, S=None, P=None, C=None, patch_start_idx=None,
+        output=None,
+    ) -> Tensor:
         def attn_residual_func(x: Tensor, pos=None, scale_msa=None, shift_msa=None) -> Tensor:
             if not self.use_cam_emb or cams is None:
                 return self.ls1(self.attn(self.norm1(x), pos=pos))

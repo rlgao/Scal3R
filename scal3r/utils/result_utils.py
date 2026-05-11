@@ -102,8 +102,36 @@ def _save_world_points(result_dir: str, visualize, downsample_xyz_ratio: float):
 
 
 def save_results(
-    processed, batches, visualize, runtime, args, recorder: StageRecorder | None = None
+    processed, 
+    batches, 
+    visualize, 
+    runtime, 
+    args, 
+    recorder: StageRecorder | None = None
 ):
+    '''
+    Always written:
+
+    - `<runtime_dir>/runtime.json`
+    - `<result_dir>/intri.yml`
+    - `<result_dir>/extri.yml`
+    - `<result_dir>/mat.txt`
+
+    When `save_dpt` is enabled:
+
+    - `<result_dir>/depths/<frame>.exr`
+
+    When `save_xyz` is enabled:
+
+    - `<result_dir>/points/blocks/<block>.ply`
+    - `<result_dir>/points/whole.ply`
+    - `<result_dir>/points/whole_indices.npy`
+    - `<result_dir>/masks/<frame>.png`
+
+    `mat.txt` stores one raveled camera-to-world `4x4` matrix per output frame.
+    '''
+
+
     if recorder is not None:
         recorder.record(
             "save_results.begin",

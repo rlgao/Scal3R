@@ -510,7 +510,8 @@ class Aggregator(nn.Module):
         for _ in range(self.aa_block_size):
             tokens = self.frame_blocks[frame_idx](
                 tokens, pos, cam, cam_drop,
-                ttt_order, ttt_cache, ttt_fastw, ttt_steps, self.block_token, enable_ttt, B, S, P, C, self.patch_start_idx,
+                ttt_order, ttt_cache, ttt_fastw, ttt_steps, self.block_token, enable_ttt, 
+                B, S, P, C, self.patch_start_idx,
             )
             frame_idx += 1
             intermediates.append(tokens.view(B, S, P, C))
@@ -549,7 +550,9 @@ class Aggregator(nn.Module):
         for _ in range(self.aa_block_size):
             tokens = self.global_blocks[global_idx](
                 tokens, pos, cam, cam_drop,
-                ttt_order, ttt_cache, ttt_fastw, ttt_steps, self.block_token, enable_ttt, B, S, P, C, self.patch_start_idx, output=output,
+                ttt_order, ttt_cache, ttt_fastw, ttt_steps, self.block_token, enable_ttt, 
+                B, S, P, C, self.patch_start_idx, 
+                output=output,
             )
             global_idx += 1
             intermediates.append(tokens.view(B, S, P, C))
@@ -710,7 +713,8 @@ class Aggregator(nn.Module):
 
         # Apply the updated TTT weights to the current layer
         tokens += self.global_blocks[index].ttt(
-            tokens, pos, ttt_order, ttt_cache, ttt_fastw, ttt_steps, self.block_token,
+            tokens, pos, 
+            ttt_order, ttt_cache, ttt_fastw, ttt_steps, self.block_token,
             w0_cache=w0, w1_cache=w1, w2_cache=w2,
             batch_size=B, S=S, P=P, C=C, patch_start_idx=self.patch_start_idx,
         )
@@ -721,6 +725,7 @@ class Aggregator(nn.Module):
             if output is not None:
                 output[index] = concat_inter.cpu()
         return dict(tokens=tokens.cpu(), pos=pos.cpu(), B=B, S=S, P=P, C=C)
+
 
 def slice_expand_and_flatten(token_tensor, B, S):
     """
