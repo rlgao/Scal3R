@@ -60,7 +60,7 @@ def get_dpt_state_path(args, block_index: int, layer_index: int) -> str:
 
 def offload_payload(payload, path: str, kind: str):
     ensure_dir(dirname(path))
-    torch.save(payload, path)
+    torch.save(_cpu_payload(payload), path)
     return dotdict(_offload_path=path, _offload_kind=kind)
 
 
@@ -105,7 +105,26 @@ def use_streaming_state(args) -> bool:
 
 
 def should_release_runtime_state(args) -> bool:
-    return bool(use_streaming_state(args) or args.offload_batches or args.offload_outputs)
+    return bool(
+        use_streaming_state(args)
+        or args.offload_batches
+        or args.offload_outputs
+        or getattr(args, "clear_cuda_cache", 0)
+    )
+
+
+def _cpu_payload(value):
+    if torch.is_tensor(value):
+        return value.detach().cpu()
+    if isinstance(value, dotdict):
+        return dotdict({key: _cpu_payload(item) for key, item in value.items()})
+    if isinstance(value, dict):
+        return {key: _cpu_payload(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_cpu_payload(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_cpu_payload(item) for item in value)
+    return value
 
 
 def offload_agg_state(state: dotdict, args, block_index: int):

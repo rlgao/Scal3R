@@ -174,6 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--offload_batches", type=int, default=-1, help="Optional batch-offload override.")
     parser.add_argument("--offload_outputs", type=int, default=-1, help="Optional output-offload override.")
     parser.add_argument("--cleanup_offload", type=int, default=-1, help="Optional offload-cleanup override.")
+    parser.add_argument("--clear_cuda_cache", type=int, default=-1, help="Optional aggressive CUDA cache cleanup override.")
     parser.add_argument(
         "--offload_dir",
         type=str,
@@ -209,7 +210,7 @@ def main() -> int:
         max_images=args.max_images if args.max_images > 0 else None,
         preprocess_workers=args.preprocess_workers if args.preprocess_workers > 0 else None,
         block_size=args.block_size if args.block_size > 0 else None,
-        overlap_size=args.overlap_size if args.overlap_size > 0 else None,
+        overlap_size=args.overlap_size if args.overlap_size >= 0 else None,
         use_loop=args.use_loop if args.use_loop >= 0 else None,
         use_xyz_align=args.use_xyz_align if args.use_xyz_align >= 0 else None,
         max_align_points_per_frame=args.max_align_points_per_frame if args.max_align_points_per_frame >= 0 else None,
@@ -221,6 +222,7 @@ def main() -> int:
         offload_batches=args.offload_batches if args.offload_batches >= 0 else None,
         offload_outputs=args.offload_outputs if args.offload_outputs >= 0 else None,
         cleanup_offload=args.cleanup_offload if args.cleanup_offload >= 0 else None,
+        clear_cuda_cache=args.clear_cuda_cache if args.clear_cuda_cache >= 0 else None,
         offload_dir=resolve_release_path(args.offload_dir) if args.offload_dir else None,
         probe_dir=resolve_release_path(args.probe_dir) if args.probe_dir else None,
         stop_after_stage=args.stop_after_stage or None,

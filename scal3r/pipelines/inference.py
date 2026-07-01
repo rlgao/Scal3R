@@ -36,6 +36,7 @@ class InferenceRequest:
     offload_batches: int | None = None
     offload_outputs: int | None = None
     cleanup_offload: int | None = None
+    clear_cuda_cache: int | None = None
     offload_dir: str | None = None
     probe_dir: str | None = None
     stop_after_stage: str | None = None
@@ -54,10 +55,16 @@ def _get_nested(config: dict[str, Any], *keys: str, default: Any = None) -> Any:
     return current
 
 
+def _value_or_default(value: Any, default: Any) -> Any:
+    return default if value is None else value
+
+
 def run_inference(config: dict[str, Any], request: InferenceRequest) -> dict[str, Any]:
     data_cfg = _get_nested(config, "data", default={}) or {}
     model_cfg = _get_nested(config, "model", default={}) or {}
     release_root = get_release_root()
+    block_size = _value_or_default(request.block_size, data_cfg.get("block_size", 60))
+    overlap_size = _value_or_default(request.overlap_size, data_cfg.get("overlap_size", 30))
 
     dataset = ImageFolderDataset(
         input_dir=request.input_dir,
@@ -96,9 +103,9 @@ def run_inference(config: dict[str, Any], request: InferenceRequest) -> dict[str
         "--preprocess_workers",
         str(request.preprocess_workers or data_cfg.get("preprocess_workers", 32)),
         "--block_size",
-        str(request.block_size or data_cfg.get("block_size", 60)),
+        str(block_size),
         "--overlap_size",
-        str(request.overlap_size or data_cfg.get("overlap_size", 30)),
+        str(overlap_size),
         "--loop_size",
         str(data_cfg.get("loop_size", 20)),
         "--use_loop",
@@ -119,6 +126,8 @@ def run_inference(config: dict[str, Any], request: InferenceRequest) -> dict[str
         str(request.offload_outputs if request.offload_outputs is not None else data_cfg.get("offload_outputs", 0)),
         "--cleanup_offload",
         str(request.cleanup_offload if request.cleanup_offload is not None else data_cfg.get("cleanup_offload", 1)),
+        "--clear_cuda_cache",
+        str(request.clear_cuda_cache if request.clear_cuda_cache is not None else data_cfg.get("clear_cuda_cache", 0)),
         "--start_frame",
         str(request.start_frame),
         "--end_frame",
@@ -165,8 +174,8 @@ def run_inference(config: dict[str, Any], request: InferenceRequest) -> dict[str
         "start_frame": request.start_frame,
         "end_frame": request.end_frame,
         "interval": request.interval,
-        "block_size": request.block_size or data_cfg.get("block_size", 60),
-        "overlap_size": request.overlap_size or data_cfg.get("overlap_size", 30),
+        "block_size": block_size,
+        "overlap_size": overlap_size,
         "preprocess_workers": request.preprocess_workers or data_cfg.get("preprocess_workers", 32),
         "use_loop": request.use_loop if request.use_loop is not None else data_cfg.get("use_loop", 1),
         "use_xyz_align": request.use_xyz_align if request.use_xyz_align is not None else data_cfg.get("use_xyz_align", 0),
@@ -178,6 +187,7 @@ def run_inference(config: dict[str, Any], request: InferenceRequest) -> dict[str
         "offload_batches": request.offload_batches if request.offload_batches is not None else data_cfg.get("offload_batches", 0),
         "offload_outputs": request.offload_outputs if request.offload_outputs is not None else data_cfg.get("offload_outputs", 0),
         "cleanup_offload": request.cleanup_offload if request.cleanup_offload is not None else data_cfg.get("cleanup_offload", 1),
+        "clear_cuda_cache": request.clear_cuda_cache if request.clear_cuda_cache is not None else data_cfg.get("clear_cuda_cache", 0),
         "offload_dir": str(request.offload_dir or join(runtime_dir, "offload")),
         "probe_dir": str(request.probe_dir) if request.probe_dir else "",
         "stop_after_stage": request.stop_after_stage or "",

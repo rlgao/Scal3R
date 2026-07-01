@@ -55,6 +55,7 @@ def format_runtime_config(args) -> list[str]:
         f"runtime_dir: {args.runtime_dir}",
         f"offload_batches: {bool(args.offload_batches)}",
         f"offload_outputs: {bool(args.offload_outputs)}",
+        f"clear_cuda_cache: {bool(args.clear_cuda_cache)}",
         f"probe_dir: {args.probe_dir or ''}",
         f"stop_after_stage: {args.stop_after_stage or ''}",
     ]
@@ -566,7 +567,7 @@ def post_process(
             compute_constraint=False,
         )
         del batch, raw_block, xyz, dpt, cnf
-        if args.offload_batches or args.offload_outputs:
+        if should_release_runtime_state(args):
             release_memory(args.device)
         pbar.update()
     pbar.close()
@@ -633,7 +634,7 @@ def post_process(
             del raw0, raw1, raw2
             del xyz0, xyz1, xyz2, dpt0, dpt1, dpt2, cnf0, cnf1, cnf2
             del processor0, processor2
-            if args.offload_batches or args.offload_outputs:
+            if should_release_runtime_state(args):
                 release_memory(args.device)
             pbar.update()
         pbar.close()
@@ -739,7 +740,7 @@ def post_process(
             visualize.block_msk.append(block_msk)
 
         del batch, raw_block
-        if args.offload_batches or args.offload_outputs:
+        if should_release_runtime_state(args):
             release_memory(args.device)
         pbar.update()
     pbar.close()
@@ -790,6 +791,7 @@ def parse_args():
     parser.add_argument('--offload_batches', type=int, default=0, help='Whether to offload prepared blocks to disk between stages')
     parser.add_argument('--offload_outputs', type=int, default=0, help='Whether to offload decoded block outputs to disk')
     parser.add_argument('--cleanup_offload', type=int, default=1, help='Whether to remove temporary offload files after finishing')
+    parser.add_argument('--clear_cuda_cache', type=int, default=0, help='Whether to release CUDA cache at additional backend stage boundaries')
     parser.add_argument('--offload_dir', type=str, default='', help='Optional directory for temporary offload files; defaults under runtime_dir/offload')
     parser.add_argument('--probe_dir', type=str, default='', help='Optional directory for step-by-step probe JSON outputs')
     parser.add_argument('--stop_after_stage', type=str, default='', help='Optional exact stage name after which the backend exits early')
@@ -839,6 +841,8 @@ def main():
                 model_name=getattr(sampler, '__class__', type(sampler)).__name__,
             )
             maybe_stop_after('load_model.done', args, recorder)
+        if args.clear_cuda_cache:
+            release_memory(args.device)
 
         batches, indices = load_data(
             dataset_cfg, 
@@ -892,6 +896,7 @@ def main():
                 'batches': bool(args.offload_batches),
                 'outputs': bool(args.offload_outputs),
                 'cleanup': bool(args.cleanup_offload),
+                'clear_cuda_cache': bool(args.clear_cuda_cache),
                 'offload_dir': get_offload_root(args) if (bool(args.streaming_state) or bool(args.offload_batches) or bool(args.offload_outputs)) else '',
             },
             'runtime_dir': get_runtime_root(args),
@@ -913,12 +918,16 @@ def main():
             args, 
             recorder=recorder
         )
+        if args.clear_cuda_cache:
+            release_memory(args.device)
         logger.info('Results saved to %s', args.result_dir)
 
     except StopAfterStage as exc:
         logger.info('Stopped after requested stage: %s', exc)
     finally:
         cleanup_offload_root(args)
+        if args.clear_cuda_cache:
+            release_memory(args.device)
 
 
 if __name__ == '__main__':
