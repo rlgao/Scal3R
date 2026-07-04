@@ -32,6 +32,8 @@ class InferenceRequest:
     test_use_amp: bool = False
     save_dpt: int | None = None
     save_xyz: int | None = None
+    save_block_ply: int | None = None
+    save_world_masks: int | None = None
     streaming_state: int | None = None
     offload_batches: int | None = None
     offload_outputs: int | None = None
@@ -118,6 +120,10 @@ def run_inference(config: dict[str, Any], request: InferenceRequest) -> dict[str
         str(request.save_dpt if request.save_dpt is not None else data_cfg.get("save_dpt", 1)),
         "--save_xyz",
         str(request.save_xyz if request.save_xyz is not None else data_cfg.get("save_xyz", 1)),
+        "--save_block_ply",
+        str(request.save_block_ply if request.save_block_ply is not None else data_cfg.get("save_block_ply", 1)),
+        "--save_world_masks",
+        str(request.save_world_masks if request.save_world_masks is not None else data_cfg.get("save_world_masks", 1)),
         "--streaming_state",
         str(request.streaming_state if request.streaming_state is not None else data_cfg.get("streaming_state", 0)),
         "--offload_batches",
@@ -183,6 +189,8 @@ def run_inference(config: dict[str, Any], request: InferenceRequest) -> dict[str
         "pgo_workers": request.pgo_workers if request.pgo_workers is not None else data_cfg.get("pgo_workers", 32),
         "save_dpt": request.save_dpt if request.save_dpt is not None else data_cfg.get("save_dpt", 1),
         "save_xyz": request.save_xyz if request.save_xyz is not None else data_cfg.get("save_xyz", 1),
+        "save_block_ply": request.save_block_ply if request.save_block_ply is not None else data_cfg.get("save_block_ply", 1),
+        "save_world_masks": request.save_world_masks if request.save_world_masks is not None else data_cfg.get("save_world_masks", 1),
         "streaming_state": request.streaming_state if request.streaming_state is not None else data_cfg.get("streaming_state", 0),
         "offload_batches": request.offload_batches if request.offload_batches is not None else data_cfg.get("offload_batches", 0),
         "offload_outputs": request.offload_outputs if request.offload_outputs is not None else data_cfg.get("offload_outputs", 0),

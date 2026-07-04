@@ -166,6 +166,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--save_dpt", type=int, default=-1, help="Optional depth-save override.")
     parser.add_argument("--save_xyz", type=int, default=-1, help="Optional point-save override.")
     parser.add_argument(
+        "--save_block_ply",
+        type=int,
+        default=-1,
+        help="Optional per-block PLY-save override; whole.ply is still saved when save_xyz is enabled.",
+    )
+    parser.add_argument(
+        "--save_world_masks",
+        type=int,
+        default=-1,
+        help="Optional world-mask save override when save_xyz is enabled.",
+    )
+    parser.add_argument(
         "--streaming_state",
         type=int,
         default=-1,
@@ -218,6 +230,8 @@ def main() -> int:
         test_use_amp=args.test_use_amp,
         save_dpt=args.save_dpt if args.save_dpt >= 0 else None,
         save_xyz=args.save_xyz if args.save_xyz >= 0 else None,
+        save_block_ply=args.save_block_ply if args.save_block_ply >= 0 else None,
+        save_world_masks=args.save_world_masks if args.save_world_masks >= 0 else None,
         streaming_state=args.streaming_state if args.streaming_state >= 0 else None,
         offload_batches=args.offload_batches if args.offload_batches >= 0 else None,
         offload_outputs=args.offload_outputs if args.offload_outputs >= 0 else None,

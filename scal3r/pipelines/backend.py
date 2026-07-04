@@ -10,7 +10,7 @@ from copy import deepcopy
 from einops import rearrange
 
 from scal3r.utils.ray_utils import get_rays
-from scal3r.utils.data_utils import to_cuda
+from scal3r.utils.data_utils import to_cuda, write_json
 from scal3r.utils.result_utils import save_results
 from scal3r.models import build_sampler_from_config
 from scal3r.utils.base_utils import DotDict as dotdict
@@ -50,6 +50,8 @@ def format_runtime_config(args) -> list[str]:
         f"pgo_workers: {int(args.pgo_workers)}",
         f"save_dpt: {bool(args.save_dpt)}",
         f"save_xyz: {bool(args.save_xyz)}",
+        f"save_block_ply: {bool(args.save_block_ply)}",
+        f"save_world_masks: {bool(getattr(args, 'save_world_masks', 1))}",
         f"streaming_state: {bool(args.streaming_state)}",
         f"result_dir: {args.result_dir}",
         f"runtime_dir: {args.runtime_dir}",
@@ -784,6 +786,8 @@ def parse_args():
     parser.add_argument('--test_use_amp', action='store_true', help='Whether to use AMP during inference')
     parser.add_argument('--save_dpt', type=int, default=1, help='Whether to save predicted depth maps')
     parser.add_argument('--save_xyz', type=int, default=1, help='Whether to save predicted point clouds')
+    parser.add_argument('--save_block_ply', type=int, default=1, help='Whether to save per-block point PLYs when save_xyz is enabled')
+    parser.add_argument('--save_world_masks', type=int, default=1, help='Whether to save per-frame world masks when save_xyz is enabled')
     parser.add_argument('--downsample_xyz_ratio', type=float, default=0.15, help='Downsample ratio for saved point clouds')
     parser.add_argument('--confidence_xyz_threshold', type=float, default=0.75, help='Confidence threshold multiplier for saved point clouds')
     parser.add_argument('--use_loop', type=int, default=1, help='Whether to enable loop detection and loop blocks')
@@ -799,9 +803,7 @@ def parse_args():
     return dotdict(vars(parser.parse_args()))
 
 
-@log_exceptions(logger, "Unhandled exception in backend")
-def main():
-    args = parse_args()
+def normalize_backend_args(args):
     args.config = str(resolve_release_path(args.config))
     args.result_dir = str(resolve_release_path(args.result_dir or get_default_output_dir("run")))
     args.runtime_dir = str(resolve_release_path(args.runtime_dir) if args.runtime_dir else join(args.result_dir, 'runtime'))
@@ -813,9 +815,197 @@ def main():
         args.offload_dir = str(resolve_release_path(args.offload_dir))
     if args.probe_dir:
         args.probe_dir = str(resolve_release_path(args.probe_dir))
+    return args
+
+
+def load_backend_model(args, device, recorder: StageRecorder | None = None):
+    if recorder is not None:
+        recorder.record('load_model.begin', config=args.config, checkpoint=args.checkpoint or '')
+    sampler, dataset_cfg = build_sampler_from_config(
+        args.config,
+        device,
+        args.checkpoint,
+    )
+    if recorder is not None:
+        recorder.record(
+            'load_model.done',
+            checkpoint=args.checkpoint or '',
+            model_name=getattr(sampler, '__class__', type(sampler)).__name__,
+        )
+        maybe_stop_after('load_model.done', args, recorder)
+    return sampler, dataset_cfg
+
+
+def run_backend_once(
+    args,
+    *,
+    sampler=None,
+    dataset_cfg=None,
+    recorder: StageRecorder | None = None,
+    device=None,
+    model_reused: bool = False,
+):
+    device = torch.device(args.device) if device is None else torch.device(device)
+    stage_timings_sec: dict[str, float] = {}
+    process_started_at = wall_time.time()
+
+    if sampler is None or dataset_cfg is None:
+        load_model_started_at = wall_time.time()
+        sampler, dataset_cfg = load_backend_model(args, device, recorder=recorder)
+        _record_backend_stage(stage_timings_sec, 'load_model_wall', load_model_started_at)
+        stage_timings_sec['load_model_reused'] = 0.0
+    else:
+        stage_timings_sec['load_model_wall'] = max(0.0, float(getattr(args, 'preloaded_model_wall', 0.0) or 0.0))
+        stage_timings_sec['load_model_reused'] = 1.0 if model_reused else 0.0
+        if recorder is not None:
+            recorder.record(
+                'load_model.reused',
+                checkpoint=args.checkpoint or '',
+                model_name=getattr(sampler, '__class__', type(sampler)).__name__,
+            )
+
+    if args.clear_cuda_cache:
+        release_started_at = wall_time.time()
+        release_memory(args.device)
+        _record_backend_stage(stage_timings_sec, 'release_after_load_model_wall', release_started_at)
+
+    load_data_started_at = wall_time.time()
+    batches, indices = load_data(
+        dataset_cfg,
+        args,
+        recorder=recorder,
+    )
+    _record_backend_stage(stage_timings_sec, 'load_data_wall', load_data_started_at)
+    print(f'len(batches): {len(batches)}')
+    print(f'len(indices): {len(indices)}')
+
+    if recorder is not None:
+        recorder.record(
+            'load_data.done',
+            n_blocks=int(len(batches)),
+            n_blocks_loop=int(args.get('n_blocks_loop', 0)),
+        )
+        maybe_stop_after('load_data.done', args, recorder)
+
+    if device.type == 'cuda':
+        torch.cuda.reset_peak_memory_stats(device)
+    inference_started_at = wall_time.time()
+
+    amp_enabled = bool(args.test_use_amp and device.type == 'cuda')
+    amp_dtype = torch.bfloat16 if device.type == 'cuda' and torch.cuda.get_device_capability(device)[0] >= 8 else torch.float16
+    forward_started_at = wall_time.time()
+    with torch.no_grad():
+        with torch.amp.autocast('cuda', enabled=amp_enabled, dtype=amp_dtype):
+            output = forward(
+                sampler,
+                batches,
+                args,
+                recorder=recorder,
+            )
+    _record_backend_stage(stage_timings_sec, 'forward_wall', forward_started_at)
+
+    post_process_started_at = wall_time.time()
+    processed, output, batches, indices, visualize = post_process(
+        output,
+        batches,
+        indices,
+        args,
+        n_blocks_loop=args.get('n_blocks_loop', 0),
+        alignment='sim3_wet',
+        use_xyz_align=args.use_xyz_align,
+        recorder=recorder,
+    )
+    _record_backend_stage(stage_timings_sec, 'post_process_wall', post_process_started_at)
+
+    inference_finished_at = wall_time.time()
+    model_postprocess_wall = inference_finished_at - inference_started_at
+    stage_timings_sec['model_postprocess_wall'] = max(0.0, model_postprocess_wall)
+    runtime = {
+        'time': model_postprocess_wall,
+        'memory': torch.cuda.max_memory_allocated(device) / (1024 ** 3) if device.type == 'cuda' else 0.0,
+        'n_frames': int(processed.output.c2w.shape[0]),
+        'offload': {
+            'states': bool(args.streaming_state),
+            'batches': bool(args.offload_batches),
+            'outputs': bool(args.offload_outputs),
+            'cleanup': bool(args.cleanup_offload),
+            'clear_cuda_cache': bool(args.clear_cuda_cache),
+            'offload_dir': get_offload_root(args) if (bool(args.streaming_state) or bool(args.offload_batches) or bool(args.offload_outputs)) else '',
+        },
+        'output': {
+            'save_dpt': bool(args.save_dpt),
+            'save_xyz': bool(args.save_xyz),
+            'save_block_ply': bool(args.save_block_ply),
+            'save_world_masks': bool(getattr(args, 'save_world_masks', 1)),
+        },
+        'runtime_dir': get_runtime_root(args),
+        'runtime_json': os.path.join(get_runtime_root(args), 'runtime.json'),
+        'stage_timings_sec': dict(stage_timings_sec),
+    }
+    runtime['fps'] = runtime['n_frames'] / max(runtime['time'], 1e-8)
+    logger.info(
+        'Inference finished, time cost: %.2fs, memory usage: %.2fGB, frames: %d',
+        runtime["time"],
+        runtime["memory"],
+        runtime["n_frames"],
+    )
+
+    save_started_at = wall_time.time()
+    save_results(
+        processed,
+        batches,
+        visualize,
+        runtime,
+        args,
+        recorder=recorder,
+    )
+    _record_backend_stage(stage_timings_sec, 'save_results_wall', save_started_at)
+    if args.clear_cuda_cache:
+        release_started_at = wall_time.time()
+        release_memory(args.device)
+        _record_backend_stage(stage_timings_sec, 'release_after_save_wall', release_started_at)
+
+    stage_timings_sec['process_total_wall'] = max(0.0, wall_time.time() - process_started_at)
+    runtime['stage_timings_sec'] = dict(stage_timings_sec)
+    write_json(os.path.join(get_runtime_root(args), "runtime.json"), runtime)
+    logger.info('Results saved to %s', args.result_dir)
+    return runtime
+
+
+def finalize_backend_run(args, runtime: dict | None = None) -> dict | None:
+    cleanup_started_at = wall_time.time()
+    cleanup_offload_root(args)
+    cleanup_wall = max(0.0, wall_time.time() - cleanup_started_at)
+    release_wall = None
+    if args.clear_cuda_cache:
+        release_started_at = wall_time.time()
+        release_memory(args.device)
+        release_wall = max(0.0, wall_time.time() - release_started_at)
+    if runtime is not None:
+        stage_timings = dict(runtime.get('stage_timings_sec', {}) or {})
+        stage_timings['cleanup_offload_wall'] = cleanup_wall
+        if release_wall is not None:
+            stage_timings['release_final_wall'] = release_wall
+        runtime['stage_timings_sec'] = stage_timings
+        try:
+            write_json(os.path.join(get_runtime_root(args), "runtime.json"), runtime)
+        except Exception:
+            pass
+    return runtime
+
+
+def _record_backend_stage(stage_timings_sec: dict[str, float], name: str, started_at: float) -> None:
+    stage_timings_sec[name] = max(0.0, wall_time.time() - started_at)
+
+
+@log_exceptions(logger, "Unhandled exception in backend")
+def main():
+    args = parse_args()
+    args = normalize_backend_args(args)
     device = torch.device(args.device)
     recorder = StageRecorder(args.probe_dir or '', args.device)
     log_block("Runtime config: (", format_runtime_config(args), closing=")")
+    runtime = None
 
     try:
         if recorder.enabled:
@@ -827,107 +1017,12 @@ def main():
                 checkpoint=args.checkpoint,
                 device=str(device),
             )
-        if recorder is not None:
-            recorder.record('load_model.begin', config=args.config, checkpoint=args.checkpoint or '')
-        sampler, dataset_cfg = build_sampler_from_config(
-            args.config, 
-            device, 
-            args.checkpoint
-        )
-        if recorder is not None:
-            recorder.record(
-                'load_model.done',
-                checkpoint=args.checkpoint or '',
-                model_name=getattr(sampler, '__class__', type(sampler)).__name__,
-            )
-            maybe_stop_after('load_model.done', args, recorder)
-        if args.clear_cuda_cache:
-            release_memory(args.device)
-
-        batches, indices = load_data(
-            dataset_cfg, 
-            args, 
-            recorder=recorder
-        )
-        print(f'len(batches): {len(batches)}')
-        print(f'len(indices): {len(indices)}')
-
-        if recorder is not None:
-            recorder.record(
-                'load_data.done',
-                n_blocks=int(len(batches)),
-                n_blocks_loop=int(args.get('n_blocks_loop', 0)),
-            )
-            maybe_stop_after('load_data.done', args, recorder)
-
-        if device.type == 'cuda':
-            torch.cuda.reset_peak_memory_stats(device)
-        t0 = wall_time.time()
-
-        amp_enabled = bool(args.test_use_amp and device.type == 'cuda')
-        amp_dtype = torch.bfloat16 if device.type == 'cuda' and torch.cuda.get_device_capability(device)[0] >= 8 else torch.float16
-        with torch.no_grad():
-            with torch.amp.autocast('cuda', enabled=amp_enabled, dtype=amp_dtype):
-                output = forward(
-                    sampler, 
-                    batches, 
-                    args, 
-                    recorder=recorder
-                )
-
-        processed, output, batches, indices, visualize = post_process(
-            output,
-            batches,
-            indices,
-            args,
-            n_blocks_loop=args.get('n_blocks_loop', 0),
-            alignment='sim3_wet',
-            use_xyz_align=args.use_xyz_align,
-            recorder=recorder,
-        )
-
-        t1 = wall_time.time()
-        runtime = {
-            'time': t1 - t0,
-            'memory': torch.cuda.max_memory_allocated(device) / (1024 ** 3) if device.type == 'cuda' else 0.0,
-            'n_frames': int(processed.output.c2w.shape[0]),
-            'offload': {
-                'states': bool(args.streaming_state),
-                'batches': bool(args.offload_batches),
-                'outputs': bool(args.offload_outputs),
-                'cleanup': bool(args.cleanup_offload),
-                'clear_cuda_cache': bool(args.clear_cuda_cache),
-                'offload_dir': get_offload_root(args) if (bool(args.streaming_state) or bool(args.offload_batches) or bool(args.offload_outputs)) else '',
-            },
-            'runtime_dir': get_runtime_root(args),
-            'runtime_json': os.path.join(get_runtime_root(args), 'runtime.json'),
-        }
-        runtime['fps'] = runtime['n_frames'] / max(runtime['time'], 1e-8)
-        logger.info(
-            'Inference finished, time cost: %.2fs, memory usage: %.2fGB, frames: %d',
-            runtime["time"],
-            runtime["memory"],
-            runtime["n_frames"],
-        )
-
-        save_results(
-            processed, 
-            batches, 
-            visualize, 
-            runtime, 
-            args, 
-            recorder=recorder
-        )
-        if args.clear_cuda_cache:
-            release_memory(args.device)
-        logger.info('Results saved to %s', args.result_dir)
+        runtime = run_backend_once(args, recorder=recorder, device=device)
 
     except StopAfterStage as exc:
         logger.info('Stopped after requested stage: %s', exc)
     finally:
-        cleanup_offload_root(args)
-        if args.clear_cuda_cache:
-            release_memory(args.device)
+        finalize_backend_run(args, runtime)
 
 
 if __name__ == '__main__':

@@ -123,10 +123,10 @@ def save_results(
 
     When `save_xyz` is enabled:
 
-    - `<result_dir>/points/blocks/<block>.ply`
+    - `<result_dir>/points/blocks/<block>.ply` when `save_block_ply` is enabled
     - `<result_dir>/points/whole.ply`
     - `<result_dir>/points/whole_indices.npy`
-    - `<result_dir>/masks/<frame>.png`
+    - `<result_dir>/masks/<frame>.png` when `save_world_masks` is enabled
 
     `mat.txt` stores one raveled camera-to-world `4x4` matrix per output frame.
     '''
@@ -162,8 +162,10 @@ def save_results(
         _save_depth_results(args.result_dir, scaled_dpt_map, render_height, render_width)
 
     if args.save_xyz:
-        _save_block_points(args.result_dir, visualize, args.downsample_xyz_ratio)
-        _save_world_masks(args.result_dir, visualize, n_frames)
+        if getattr(args, "save_block_ply", 1):
+            _save_block_points(args.result_dir, visualize, args.downsample_xyz_ratio)
+        if getattr(args, "save_world_masks", 1):
+            _save_world_masks(args.result_dir, visualize, n_frames)
         _save_world_points(args.result_dir, visualize, args.downsample_xyz_ratio)
 
     if recorder is not None:
@@ -174,5 +176,7 @@ def save_results(
             n_frames=int(n_frames),
             wrote_depths=bool(args.save_dpt),
             wrote_points=bool(args.save_xyz),
+            wrote_block_points=bool(args.save_xyz and getattr(args, "save_block_ply", 1)),
+            wrote_world_masks=bool(args.save_xyz and getattr(args, "save_world_masks", 1)),
         )
         maybe_stop_after("save_results.done", args, recorder)
